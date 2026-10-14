@@ -1,0 +1,24 @@
+[project]
+name = "rubaiyat-mcp"
+version = "0.1.0"
+description = "MCP server exposing word-frequency and concordance tools over the Rubaiyat of Khayyam (English and Persian XML)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["mcp>=1.2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+rubaiyat-mcp = "rubaiyat_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["rubaiyat_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

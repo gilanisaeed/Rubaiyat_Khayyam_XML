@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rubaiyat": {
+      "command": "uv",
+      "args": ["run", "rubaiyat-mcp"]
+    }
+  }
+}
