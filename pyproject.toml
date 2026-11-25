@@ -20,5 +20,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["rubaiyat_mcp"]
 
+[tool.setuptools.package-data]
+rubaiyat_mcp = ["glosses.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,10 +1,10 @@
 """MCP server for finding and quoting quatrains from the Rubaiyat of Khayyam.
 
-The server exposes the two aligned texts in this repository, Edward
-FitzGerald's English translation and the Persian original, so an assistant
-can look up a quatrain by number, find quatrains by keyword or theme, pick
-one at random, and get the text back formatted with attribution for use in
-documents, slides, web pages and other artifacts.
+The server exposes the two texts in this repository, Edward FitzGerald's
+English translation and a Persian collection of Khayyam's quatrains, so an
+assistant can look up a quatrain by number, find quatrains by keyword, theme
+or paraphrase, pick one at random, read the whole poem, and get the text
+back formatted with attribution for use in documents, slides and web pages.
 
 Run with ``python -m rubaiyat_mcp`` (stdio transport, the default for
 Claude Code / Claude Desktop) or ``rubaiyat-mcp --transport streamable-http``.
@@ -22,7 +22,8 @@ except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer  # type: ignore[no-redef]
 
 from rubaiyat_mcp import __version__
-from rubaiyat_mcp.corpus import LANGUAGES, Corpus, Language, load_corpora
+from rubaiyat_mcp.corpus import LANGUAGES, STOPWORDS, Corpus, Language, load_corpora, normalize
+from rubaiyat_mcp.glosses import Glossary
 from rubaiyat_mcp.themes import THEMES, theme_words
 
 Scope = Literal["english", "persian", "both"]
@@ -32,17 +33,30 @@ ATTRIBUTION = {
     "english": "Omar Khayyam, translated by Edward FitzGerald",
     "persian": "عمر خیام",
 }
+OTHER: dict[str, Language] = {"english": "persian", "persian": "english"}
 
 INSTRUCTIONS = """\
-Look up and quote quatrains (rubaiyat) of Omar Khayyam. Two aligned texts are
-available: 'english' (Edward FitzGerald's translation) and 'persian' (the
-original). Each has 75 four-line quatrains, and quatrain N in one language is
-the counterpart of quatrain N in the other.
+Look up and quote quatrains (rubaiyat) of Omar Khayyam. Two texts are
+available, each of 75 four-line quatrains: 'english' (Edward FitzGerald's
+translation) and 'persian' (the original). They are separate collections, not
+line-by-line translations, and quatrain numbers do NOT correspond between
+them. Where an English quatrain draws on a Persian one, get_quatrain and
+find_quatrains report it under 'related'; never pair the texts by number.
 
-Typical flow: use find_quatrains with a keyword or a theme (see list_themes)
-to shortlist candidates, then get_quatrain with format='markdown' or 'html'
-to obtain quote-ready text with attribution for an artifact. random_quatrain
-gives a quick epigraph. Matching ignores case and Persian spelling variants.
+How to find a quatrain:
+- A specific number: get_quatrain(n, language).
+- A word or image the quatrain uses: find_quatrains(query=...). It also
+  searches a one-sentence English summary and tags of every quatrain, so
+  English queries find Persian quatrains too.
+- A broad subject: find_quatrains(theme=...) with a name from list_themes.
+- A paraphrase, mood or idea ("something about accepting death without
+  fear"): call all_quatrains(language) once, read the 75 summaries and
+  texts, and choose yourself. The whole text is short.
+- A quick epigraph: random_quatrain.
+
+Use format='markdown' or 'html' on get_quatrain / random_quatrain to receive
+quote-ready text with attribution for an artifact. Matching ignores case and
+Persian spelling variants.
 """
 
 server = MCPServer(
@@ -53,6 +67,7 @@ server = MCPServer(
 )
 
 _corpora: dict[Language, Corpus] | None = None
+_glossary: Glossary | None = None
 
 
 def corpora() -> dict[Language, Corpus]:
@@ -61,6 +76,13 @@ def corpora() -> dict[Language, Corpus]:
     if _corpora is None:
         _corpora = load_corpora()
     return _corpora
+
+
+def glossary() -> Glossary:
+    global _glossary
+    if _glossary is None:
+        _glossary = Glossary.load()
+    return _glossary
 
 
 def corpus(language: str) -> Corpus:
@@ -78,17 +100,17 @@ def _scope(language: str) -> list[Language]:
     return [language]  # type: ignore[list-item]
 
 
-def _max_quatrain() -> int:
-    return max(corpus("english").quatrains)
+def _max_quatrain(language: str) -> int:
+    return max(corpus(language).quatrains)
 
 
-def _check_n(n: int) -> None:
-    if n < 1 or n > _max_quatrain():
-        raise ValueError(f"quatrain {n} does not exist; valid numbers are 1-{_max_quatrain()}")
+def _check_n(language: str, n: int) -> None:
+    if n < 1 or n > _max_quatrain(language):
+        raise ValueError(f"quatrain {n} does not exist; valid numbers are 1-{_max_quatrain(language)}")
 
 
-def _texts(n: int, languages: list[Language]) -> dict[str, list[str]]:
-    return {lang: [line.text for line in corpus(lang).quatrain(n)] for lang in languages}
+def _lines(language: str, n: int) -> list[str]:
+    return [line.text for line in corpus(language).quatrain(n)]
 
 
 def _attribution(lang: str, n: int) -> str:
@@ -97,63 +119,113 @@ def _attribution(lang: str, n: int) -> str:
     return f"{ATTRIBUTION[lang]}, quatrain {n}"
 
 
-def render(n: int, languages: list[Language], fmt: str) -> dict:
-    """Return quatrain ``n`` as data, plus a ``formatted`` string for text formats."""
-    texts = _texts(n, languages)
+def _entry(language: str, n: int, *, related: bool = True) -> dict:
+    """The standard description of one quatrain: text, summary, tags, attribution."""
+    g = glossary().get(language, n)
     out = {
+        "language": language,
         "quatrain": n,
-        **texts,
-        "attribution": {lang: _attribution(lang, n) for lang in languages},
+        "lines": _lines(language, n),
+        "gloss": g.gloss,
+        "tags": list(g.tags),
+        "attribution": _attribution(language, n),
     }
-    if fmt != "json":
-        out["format"] = fmt
-        out["formatted"] = format_quatrain(n, languages, fmt)
+    if related:
+        other = OTHER[language]
+        out["related"] = [_entry(other, m, related=False) for m in g.related]
+        out["related_note"] = (
+            f"{other} quatrains this one corresponds to (same source, not a literal translation)"
+            if g.related
+            else f"no corresponding {other} quatrain in this collection"
+        )
     return out
-
-
-def format_quatrain(n: int, languages: list[Language], fmt: str) -> str:
-    """Render quatrain ``n`` as plain text, Markdown or HTML with attribution."""
-    texts = _texts(n, languages)
-    if fmt == "plain":
-        blocks = ["\n".join(texts[lang]) + f"\n— {_attribution(lang, n)}" for lang in languages]
-        return "\n\n".join(blocks)
-    if fmt == "markdown":
-        blocks = []
-        for lang in languages:
-            quote = "\n".join(f"> {line}  " for line in texts[lang])
-            blocks.append(f"{quote}\n>\n> — *{_attribution(lang, n)}*")
-        return "\n\n".join(blocks)
-    if fmt == "html":
-        blocks = []
-        for lang in languages:
-            rtl = ' lang="fa" dir="rtl"' if lang == "persian" else ' lang="en"'
-            lines = "<br>\n    ".join(_escape(line) for line in texts[lang])
-            blocks.append(
-                f'<blockquote class="rubai"{rtl}>\n  <p>\n    {lines}\n  </p>\n'
-                f"  <footer>— {_escape(_attribution(lang, n))}</footer>\n</blockquote>"
-            )
-        return "\n".join(blocks)
-    raise ValueError(f"unknown format {fmt!r}; choose json, plain, markdown or html")
 
 
 def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def format_block(language: str, n: int, fmt: str) -> str:
+    """Render one quatrain as plain text, Markdown or HTML with attribution."""
+    lines = _lines(language, n)
+    attribution = _attribution(language, n)
+    if fmt == "plain":
+        return "\n".join(lines) + f"\n— {attribution}"
+    if fmt == "markdown":
+        quote = "\n".join(f"> {line}  " for line in lines)
+        return f"{quote}\n>\n> — *{attribution}*"
+    if fmt == "html":
+        attrs = ' lang="fa" dir="rtl"' if language == "persian" else ' lang="en"'
+        body = "<br>\n    ".join(_escape(line) for line in lines)
+        return (
+            f'<blockquote class="rubai"{attrs}>\n  <p>\n    {body}\n  </p>\n'
+            f"  <footer>— {_escape(attribution)}</footer>\n</blockquote>"
+        )
+    raise ValueError(f"unknown format {fmt!r}; choose json, plain, markdown or html")
+
+
+def render(language: str, n: int, fmt: str, include_related: bool) -> dict:
+    """``_entry`` plus, for text formats, a ``formatted`` string ready to paste."""
+    out = _entry(language, n, related=include_related)
+    if fmt != "json":
+        blocks = [format_block(language, n, fmt)]
+        if include_related:
+            for rel in out["related"]:
+                blocks.append(format_block(rel["language"], rel["quatrain"], fmt))
+        out["format"] = fmt
+        out["formatted"] = "\n\n".join(blocks)
+    return out
+
+
+def _content_words(words: list[str]) -> list[str]:
+    """Drop function words from a multi-word query so 'without' or 'که' cannot dominate the ranking."""
+    kept = [w for w in words if normalize(w, "english") not in STOPWORDS["english"]
+            and normalize(w, "persian") not in STOPWORDS["persian"]]
+    return kept or words
+
+
+def _search(language: Language, words: list[str], gloss_words: list[str]) -> dict[int, dict]:
+    """Score quatrains of one collection against text words and English gloss/tag words.
+
+    Covering more distinct query words outranks repeating one word, so a
+    quatrain matching three of four words beats one that says 'wine' thrice.
+    Within equal coverage, text hits count double gloss/tag hits.
+    """
+    hits: dict[int, dict] = {}
+    for n, h in corpus(language).match_quatrains(words).items():
+        e = hits.setdefault(n, {"raw": 0, "text_words": [], "gloss_words": []})
+        e["raw"] += 2 * h["score"]
+        e["text_words"] = h["matched_words"]
+    for n, h in glossary().match(language, gloss_words).items():
+        e = hits.setdefault(n, {"raw": 0, "text_words": [], "gloss_words": []})
+        e["raw"] += h["score"]
+        e["gloss_words"] = h["matched_words"]
+    for e in hits.values():
+        distinct = len({normalize(w, "english") for w in e["text_words"] + e["gloss_words"]})
+        e["score"] = 10 * distinct + e.pop("raw")
+    return hits
+
+
 # --------------------------------------------------------------------- tools
 
 
 @server.tool()
-def get_quatrain(n: int, language: Scope = "both", format: Format = "json") -> dict:
-    """Return quatrain n (1-75) in English, Persian or both, ready to quote.
+def get_quatrain(
+    n: int,
+    language: Language = "english",
+    format: Format = "json",
+    include_related: bool = True,
+) -> dict:
+    """Return quatrain n (1-75) of one text, with its summary, tags and attribution, ready to quote.
 
-    The result always holds the lines per language and an attribution string.
-    With format 'plain', 'markdown' (a blockquote) or 'html' (a <blockquote>
-    with lang/dir attributes) it also holds a 'formatted' field: the quatrain
-    with attribution appended, ready to paste into an artifact.
+    With include_related the corresponding quatrains in the other language
+    are attached (curated correspondences, not number matching). format
+    'plain', 'markdown' (blockquote) or 'html' (<blockquote> with lang/dir)
+    adds a 'formatted' string with attribution, including the related
+    quatrains, ready to paste into an artifact.
     """
-    _check_n(n)
-    return render(n, _scope(language), format)
+    _check_n(language, n)
+    return render(language, n, format, include_related)
 
 
 @server.tool()
@@ -163,88 +235,120 @@ def find_quatrains(
     language: Scope = "both",
     limit: int = 10,
 ) -> dict:
-    """Find quatrains by keyword(s) and/or theme, ranked by how strongly they match.
+    """Find quatrains by keyword(s) and/or theme, ranked by match strength.
 
-    query: one or more words (English or Persian); a quatrain matches when a
-    line contains any of them as a whole word. theme: a name from list_themes,
-    which expands to curated words in both languages. language limits which
-    text is searched; results always include both texts of each quatrain so
-    the original and the translation can be shown together.
+    query: one or more words, English or Persian. Each is matched as a whole
+    word in the text and, in English, in every quatrain's one-sentence
+    summary and tags, so an English query reaches Persian quatrains too.
+    theme: a name from list_themes, expanded to curated words. language
+    chooses which collection(s) to search. Each result carries the text,
+    summary, tags, attribution and related quatrains in the other language.
+    For a paraphrase or mood rather than a word, use all_quatrains instead.
     """
     if not query and not theme:
         raise ValueError("give a query, a theme, or both")
-    languages = _scope(language)
-    combined: dict[int, dict] = {}
-    for lang in languages:
-        words: list[str] = []
-        if query:
-            words.extend(query.split())
-        if theme:
-            words.extend(theme_words(theme, lang))
-        for n, hit in corpus(lang).match_quatrains(words).items():
-            entry = combined.setdefault(n, {"quatrain": n, "score": 0, "matches": {}})
-            entry["score"] += hit["score"]
-            entry["matches"][lang] = {"words": hit["matched_words"], "lines": hit["matched_lines"]}
-    ranked = sorted(combined.values(), key=lambda e: (-e["score"], e["quatrain"]))
+    query_words = _content_words(query.split()) if query else []
     results = []
-    for entry in ranked[: limit or None]:
-        n = entry["quatrain"]
-        results.append({**entry, **_texts(n, list(LANGUAGES))})
+    for lang in _scope(language):
+        words = list(query_words)
+        gloss_words = list(query_words)
+        if theme:
+            words += theme_words(theme, lang)
+            gloss_words += theme_words(theme, "english")
+        for n, h in _search(lang, words, gloss_words).items():
+            results.append(
+                {
+                    "score": h["score"],
+                    "matched": {"text": h["text_words"], "gloss_or_tags": h["gloss_words"]},
+                    **_entry(lang, n),
+                }
+            )
+    results.sort(key=lambda e: (-e["score"], e["language"], e["quatrain"]))
     return {
         "query": query,
         "theme": theme,
-        "searched": languages,
-        "total_matches": len(ranked),
-        "returned": len(results),
-        "results": results,
+        "searched": _scope(language),
+        "total_matches": len(results),
+        "returned": min(len(results), limit) if limit else len(results),
+        "results": results[: limit or None],
     }
 
 
 @server.tool()
-def random_quatrain(language: Scope = "both", theme: str | None = None, format: Format = "json") -> dict:
-    """Pick a random quatrain, optionally restricted to a theme, in the requested format."""
-    languages = _scope(language)
+def all_quatrains(language: Language = "english", include_text: bool = True) -> dict:
+    """Return every quatrain of one text with its summary and tags, for reading and choosing directly.
+
+    The whole collection is small (75 quatrains, about 2500 words), so for a
+    paraphrased request read it and pick, rather than guessing keywords.
+    Set include_text=false for summaries only.
+    """
+    c = corpus(language)
+    items = []
+    for n in sorted(c.quatrains):
+        g = glossary().get(language, n)
+        item = {"quatrain": n, "gloss": g.gloss, "tags": list(g.tags), "related": list(g.related)}
+        if include_text:
+            item["lines"] = _lines(language, n)
+        items.append(item)
+    return {
+        "language": language,
+        "attribution": ATTRIBUTION[language],
+        "count": len(items),
+        "related_means": f"numbers of corresponding {OTHER[language]} quatrains",
+        "quatrains": items,
+    }
+
+
+@server.tool()
+def random_quatrain(
+    language: Language = "english",
+    theme: str | None = None,
+    format: Format = "json",
+    include_related: bool = True,
+) -> dict:
+    """Pick a random quatrain from one text, optionally within a theme, in the requested format."""
     if theme:
-        candidates: set[int] = set()
-        for lang in languages:
-            candidates.update(corpus(lang).match_quatrains(theme_words(theme, lang)))
+        candidates = set(_search(language, theme_words(theme, language), theme_words(theme, "english")))
         if not candidates:
-            raise ValueError(f"no quatrain matches theme {theme!r}")
+            raise ValueError(f"no {language} quatrain matches theme {theme!r}")
         n = random.choice(sorted(candidates))
     else:
-        n = random.randint(1, _max_quatrain())
-    return render(n, languages, format)
+        n = random.randint(1, _max_quatrain(language))
+    return render(language, n, format, include_related)
 
 
 @server.tool()
 def browse_quatrains(language: Language = "english", start: int = 1, count: int = 75) -> dict:
-    """List quatrains by number with their first line, for skimming the poem or picking one to fetch."""
+    """List quatrains of one text by number with first line and summary, for skimming."""
     c = corpus(language)
-    _check_n(start)
-    numbers = sorted(c.quatrains)
-    chosen = [n for n in numbers if n >= start][: max(count, 0) or None]
+    _check_n(language, start)
+    numbers = [n for n in sorted(c.quatrains) if n >= start][: max(count, 0) or None]
     return {
         "language": language,
-        "total": len(numbers),
-        "quatrains": [{"quatrain": n, "first_line": c.quatrain(n)[0].text} for n in chosen],
+        "total": len(c.quatrains),
+        "quatrains": [
+            {"quatrain": n, "first_line": c.quatrain(n)[0].text, "gloss": glossary().get(language, n).gloss}
+            for n in numbers
+        ],
     }
 
 
 @server.tool()
 def list_themes() -> dict:
-    """List the themes find_quatrains and random_quatrain accept, with their keywords and quatrain counts."""
+    """List the themes find_quatrains and random_quatrain accept, with keywords and match counts per text."""
     out = []
     for name, spec in THEMES.items():
-        matched: set[int] = set()
-        for lang in LANGUAGES:
-            matched.update(corpus(lang).match_quatrains(spec[lang]))  # type: ignore[arg-type]
+        counts = {
+            lang: len(_search(lang, list(spec[lang]), list(spec["english"])))  # type: ignore[arg-type]
+            for lang in LANGUAGES
+        }
         out.append(
             {
                 "theme": name,
                 "description": spec["description"],
                 "english_words": spec["english"],
                 "persian_words": spec["persian"],
-                "quatrains": len(matched),
+                "quatrains": counts,
             }
         )
     return {"themes": out}
@@ -252,10 +356,14 @@ def list_themes() -> dict:
 
 @server.tool()
 def corpus_info() -> dict:
-    """Describe the texts: source files, number of quatrains and lines, vocabulary size, and attribution."""
+    """Describe the texts: source files, counts, attribution, and how the two collections relate."""
+    paired = sum(1 for n in range(1, 76) if glossary().get("english", n).related)
     return {
         "corpora": [{**c.summary(), "attribution": ATTRIBUTION[c.language]} for c in corpora().values()],
-        "note": "Quatrain numbers are aligned between the English and Persian texts.",
+        "relationship": (
+            "The English and Persian texts are separate collections; quatrain numbers do not correspond. "
+            f"{paired} of the 75 English quatrains have a curated 'related' Persian counterpart."
+        ),
     }
 
 
@@ -267,8 +375,8 @@ def word_frequency(
 ) -> dict:
     """Rank the most frequent words in one text (function words excluded by default).
 
-    A quick way to see which images dominate the poem before choosing a theme
-    or keyword for find_quatrains.
+    A quick way to see which images dominate the poem before choosing a
+    keyword for find_quatrains.
     """
     c = corpus(language)
     rows = c.frequency(top_n=top_n or None, exclude_stopwords=exclude_stopwords)
@@ -281,8 +389,8 @@ def word_frequency(
 @server.resource("rubaiyat://{language}/quatrain/{n}", mime_type="text/plain")
 def quatrain_resource(language: str, n: int) -> str:
     """One quatrain as plain text with attribution, e.g. rubaiyat://english/quatrain/12."""
-    _check_n(n)
-    return format_quatrain(n, _scope(language), "plain")
+    _check_n(language, n)
+    return format_block(language, n, "plain")
 
 
 @server.resource("rubaiyat://{language}/text", mime_type="text/plain")
@@ -305,6 +413,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     corpora()  # fail fast if the XML files are missing
+    glossary()
     server.run(transport=args.transport)
 
 
