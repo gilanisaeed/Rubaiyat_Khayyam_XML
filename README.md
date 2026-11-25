@@ -10,36 +10,42 @@ This repository includes Rubaiyat in Persian and English. The English translatio
 
 I assure you that the XML files are well-formed but I don't guarantee the complete correctness of the TEI version of these files.
 
-## MCP server: word frequency and concordance
+## MCP server: find and quote quatrains
 
-The `rubaiyat_mcp` package exposes the two aligned corpora (`english.xml`,
-`persian.xml`; 75 quatrains of 4 lines each) to any MCP client as a set of
-word-frequency and concordance tools. Words are matched after normalisation:
-English is lower-cased, and Persian has the Arabic yeh/kaf (`ي`, `ك`) folded
-to the Persian forms (`ی`, `ک`) with short-vowel diacritics removed, so
-either spelling finds the same word.
+The `rubaiyat_mcp` package exposes the two aligned texts (`english.xml`,
+`persian.xml`; 75 quatrains of 4 lines each) to any MCP client, so an
+assistant can look up a quatrain by number, find quatrains by keyword or
+theme, pick one at random, and get the text back with attribution, ready to
+drop into a document, slide, web page or other artifact. Quatrain *n* in one
+language is the counterpart of quatrain *n* in the other, so the original
+and the translation can always be shown together.
 
 ### Tools
 
-| Tool | What it returns |
+| Tool | What it does |
 | --- | --- |
-| `corpus_info` | Quatrain, line, token, vocabulary and hapax counts per language |
-| `word_frequency` | Ranked word list with count, rate per 1000 tokens and quatrains containing the word; filters for stopwords, length, prefix and substring |
-| `ngram_frequency` | Most frequent bigrams/trigrams (2 to 6) within lines |
-| `word_context` | Every line containing a word, with its full quatrain and the aligned quatrain in the other language (a concordance) |
-| `word_distribution` | A word's count quatrain by quatrain |
-| `search_lines` | Substring or regex search over lines in one or both languages |
-| `get_quatrain` | Quatrain *n* in English, Persian, or both |
-| `compare_word_frequency` | An English word against a Persian word: counts and shared / distinct quatrains |
+| `get_quatrain` | Quatrain *n* in English, Persian or both. `format` of `plain`, `markdown` or `html` adds a quote-ready `formatted` string with attribution (the HTML carries `lang`/`dir="rtl"` for Persian) |
+| `find_quatrains` | Keyword and/or theme search, ranked by match strength; each result carries both texts and which words and lines matched |
+| `random_quatrain` | A random quatrain, optionally within a theme, in any format |
+| `browse_quatrains` | Numbered list of first lines for skimming the poem |
+| `list_themes` | The available themes (wine, mortality, time, fate, love, nature, joy, faith, potter, kings, mystery, cosmos, sorrow) with their keywords in both languages |
+| `corpus_info` | Source files, counts and attribution strings |
+| `word_frequency` | Most frequent words in one text, to see which images dominate before choosing a keyword |
 
-Resources: `rubaiyat://{language}/quatrain/{n}` and `rubaiyat://{language}/text`.
+Resources: `rubaiyat://{language}/quatrain/{n}` (plain text with attribution)
+and `rubaiyat://{language}/text` (the whole poem).
+
+Matching ignores case, and Persian queries match whether typed with the
+Arabic yeh/kaf (`ي`, `ك`, as in the XML) or the Persian forms (`ی`, `ک`).
+Theme search is keyword-based, not semantic; every theme word occurs in the
+text, so each theme returns results in both languages.
 
 ### Running it
 
 Requires Python 3.10+ and the `mcp` package (1.2 or newer; 2.x is supported).
 
 ```sh
-uv run rubaiyat-mcp                        # stdio transport (default)
+uv run rubaiyat-mcp                               # stdio transport (default)
 uv run rubaiyat-mcp --transport streamable-http   # HTTP on 127.0.0.1:8000/mcp
 ```
 

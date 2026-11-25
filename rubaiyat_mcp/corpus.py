@@ -217,6 +217,30 @@ class Corpus:
             dist[line.quatrain] += line.tokens.count(key)
         return dict(sorted(dist.items()))
 
+    def match_quatrains(self, words: Iterable[str]) -> dict[int, dict]:
+        """Score quatrains by how many of ``words`` they contain.
+
+        Each word is matched as a whole normalised token. The result maps a
+        quatrain number to ``{"score": n_matching_tokens, "matched_words": [...],
+        "matched_lines": [line numbers]}`` and only contains quatrains with a hit.
+        """
+        keys = [normalize(w, self.language).strip() for w in words]
+        keys = [k for k in keys if k]
+        hits: dict[int, dict] = {}
+        for key in keys:
+            for line in self.postings.get(key, []):
+                entry = hits.setdefault(
+                    line.quatrain, {"score": 0, "matched_words": [], "matched_lines": []}
+                )
+                entry["score"] += line.tokens.count(key)
+                if key not in entry["matched_words"]:
+                    entry["matched_words"].append(key)
+                if line.number not in entry["matched_lines"]:
+                    entry["matched_lines"].append(line.number)
+        for entry in hits.values():
+            entry["matched_lines"].sort()
+        return hits
+
     def search(self, query: str, *, regex: bool = False, max_results: int | None = None) -> list[Line]:
         if regex:
             pattern = re.compile(query, re.IGNORECASE)

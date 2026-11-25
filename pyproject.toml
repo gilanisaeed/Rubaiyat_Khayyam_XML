@@ -1,7 +1,7 @@
 [project]
 name = "rubaiyat-mcp"
 version = "0.1.0"
-description = "MCP server exposing word-frequency and concordance tools over the Rubaiyat of Khayyam (English and Persian XML)"
+description = "MCP server for finding and quoting quatrains of the Rubaiyat of Khayyam (aligned English and Persian XML)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
